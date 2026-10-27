@@ -1410,7 +1410,9 @@ so `track` is limited to 16 bits a track). P growing moves the patterns'
 and the project's regions, so their data in older projects loads as zeros;
 the pattern tracks come first and keep theirs. The stock OS does not keep these
 bytes in a project file, so core also hooks the file save and load
-(Transfer's `.arprj` and the card) and Total Recall's buffer.
+(Transfer's `.arprj` and the card), and the SysEx dump of the working project
+in the same routine, which OS 1.74 never reaches. A Total Recall take sends the stored project as it is, so it carries what
+the stored project holds.
 
 **When a field reaches the project.** A live item's fields go into the
 stored project when stock saves that item there. A sound's or kit's go with
@@ -1418,9 +1420,15 @@ the stock save of that sound or kit. Pattern-track and pattern fields go
 whenever stock saves any part of that pattern (from core-ar2 0.3: an edited
 track, the pattern's settings, its parameter locks; with 0.2, so on 1.73,
 only the whole pattern, at SAVE PROJECT or into a project file), and then the whole
-pattern's. A field a mod sets from its own page with no stock edit is
-kept by the next of those saves, as stock's own data is; until then a power
-cycle loses it, as it loses an unsaved stock edit.
+pattern's. From core-ar2 0.7 `core_store_set` also writes the field
+straight into the item's stored copy (the current kit and its sounds, the
+saved kits and theirs, the pool, the global slots, and the working
+pattern's and the 128 patterns' tracks and settings), as stock writes each
+parameter edit of the current kit: a field survives a power cycle without a
+save, and after SAVE PROJECT AS core copies what the save wrote of its own
+bytes into the stored project. With 0.6 and older a field a mod set from
+its own page with no stock edit waited for the next of those saves, and a
+power cycle before it lost the field.
 
 **The lockfile.** Where each field sits is decided once and then kept, in a
 JSON file: `elekloader.patch --lockfile FILE` (default:
@@ -1467,7 +1475,7 @@ save (0x400b0804 on 1.73, 0x400b0870 on 1.74) and the SysEx copies: 0x4000937c a
 and 0x4000863e (kits), 0x40007a5c and 0x4000763c (global slots), 0x40011ab8
 and 0x400118e8 (pattern and track init), 0x400122b6 (sound init),
 0x40011d38 (CREATE NEW and the project reset), 0x4000cd2e (every project
-load), 0x40034d86 (Total Recall's buffer save), the file save, and
+load), 0x40034d86 (the SysEx dump of the working project, unreachable on 1.74), the file save, and
 0x40035000 (the file load), and the three calls through which the SysEx
 project commands copy, write and swap whole stored songs (0x4018b6ec,
 0x4018c09a, 0x4018c2bc on 1.73; 0x4018b8b8, 0x4018c266, 0x4018c488 on 1.74)
@@ -1804,6 +1812,21 @@ of the entry's `open()`, after the menu has closed and gone back to its
 root, so `pick` may open another list. NO closes a submenu like the menu, and
 holding a track key always opens the root. The machines mod's MACHINES
 entry opens one (below).
+
+### Synth and filter machines (machines-dn2 0.1, Digitone II)
+
+The experimental `machines-dn2` companion adds external synths in
+**FUNC+SYN** on OS 1.12, and filters in its FLTR category, independently of
+the synth. A mod contributes a stable ID and names, and its DSP code; the
+firmware hooks live in the companion, which shows the stock OS each custom
+machine as a fixed stock host type. See
+[Digitone II machines](MACHINES-DN2.md) for IDs, host types and missing
+mods, and the [track-synth contract](MACHINES-DN2-VOICE.md) or
+[filter contract](MACHINES-DN2-FILTER.md) for registration and custom DSP. One custom synth and one custom filter can share a
+build; their SDK helpers package the compiled code in separate regions.
+The producer's build handles compilation and placement. The external
+`digitone-2-mod-hack` example's `mise run build-c` builds SINE, LOWPASS and
+DigiHealth together. This interface is implemented only for Digitone II.
 
 ### Machines and stock parameters (core-dn1 3.1, Digitone mk1)
 
@@ -2182,6 +2205,23 @@ gap between the pool's end (0x47BAF640 in 1.53, 0x47BBF640 in 1.54, which
 the OS compares against) and the ring at 0x47C00000. No instruction operand
 points into it, and in an emulator run nothing writes there. As on the
 Digitone, a build takes 4.0, the newest core, for every selection.
+
+### Large buffers on the Model:Cycles: the bulk area
+
+The mods' own area (0x47E00000, 256 KB) holds their code, tables and
+`.bss`. A buffer of megabytes, such as a sample pool, goes in `bulk`:
+0x42800000-0x47E00000 (86 MB), as on the Digitone mk1. A mod claims a piece
+of it as a region, which the linker keeps apart from every other mod's:
+
+    "resources": {"regions": [{"name": "sample pool", "lo": "0x43800000", "hi": "0x46700000"}]}
+
+It starts where the highest buffer the OS names ends (its 4 MB buffer at
+0x4A400000, the uncached view of 0x42400000), and no decoded operand of
+1.13's code names anything from there up to the mods' area, under any of
+the DDR's eight views. The area is cacheable through 0x40000000-0x47FFFFFF
+(ACR0) and uncached through the same addresses plus 0x08000000. The OS
+never clears it: a mod clears what it reads before it has written it. The
+Model:Samples keeps its sample pool there, so its profile has no `bulk`.
 
 ### The master output and the master pages (core 4.1, Digitakt mk1)
 
@@ -3182,13 +3222,18 @@ Some differences from an octabam build, by design:
 | `is a DSP reference to a ColdFire address` (or the reverse) | a `dsp24` relocation names a ColdFire symbol, or a ColdFire one a DSP label | name the right symbol; DSP labels are word addresses on the DSP |
 | `dsp_asm is not installed` | the SDK needs octabam's DSP assembler | build octabam's `vendor/dsp56300` and set `ELEKLOADER_DSP_ASM` |
 | `the label N is part of a longer word here` (SDK) | dsp_asm would put N's address inside that word | rename the label |
-| `SHARC ABI does not match the device profile` | a SHARC mod's `abi` is not `dn2-master-mono32-l2-v1` | set it; the other ABI is core's bridge's |
-| `SHARC payload has a gap or overlap in its owner` | the segments and zero ranges do not cover the mod's 32 KiB exactly once | add a `zero` range for the bytes you do not use; fix overlapping offsets |
+| `SHARC ABI does not match the device profile` | the artifact does not name a supported master-output, track-synth or track-filter contract | build for the matching [SHARC contract](FORMAT.md#digitone-ii-sharc-mod); changing only the ABI string does not relocate code |
+| `SHARC voice machine_id must match its single native voice registration` / `DN2 voice registration requires a matching SHARC voice payload` | a voice descriptor and DSP artifact disagree, or the artifact is absent | package one matching descriptor and payload as the [track-synth contract](MACHINES-DN2-VOICE.md) describes |
+| `SHARC filter machine_id must match its single native filter registration` / `DN2 filter registration requires a matching SHARC filter payload` | a filter descriptor and DSP artifact disagree, or the artifact is absent | package one matching descriptor and payload as the [filter contract](MACHINES-DN2-FILTER.md) describes |
+| `SHARC voice stack exceeds the profile limit` | the callback declares more than 128 stack bytes | reduce its stack use and declaration, then qualify the real workload |
+| `SHARC filter stack exceeds the profile limit` | the callback declares more than 20 stack bytes | reduce its stack use and declaration, then qualify the real workload |
+| `DN2 filter G needs a label of 1..5 printable ASCII characters and a default of 0..127` | a filter descriptor's `g` has an empty, too long or non-printable label, or a default above 127 | give G a label of one to five printable ASCII characters and a default of 0..127, or leave `g` out ([filter contract](MACHINES-DN2-FILTER.md)) |
+| `SHARC payload has a gap or overlap in its owner` | the segments and zero ranges do not cover the mod's owner exactly once | add a `zero` range for the bytes you do not use; fix overlapping offsets |
 | `SHARC mod code needs its profiled NOP read-ahead guard` | a code segment does not end in 64 bytes of NOPs (`0100` repeated) | pad the end of each code segment |
 | `SHARC entry is in the instruction read-ahead guard` / `SHARC entry is not in owned code` | a callback offset is in the guard, outside the code, or odd | link the callbacks inside a code segment, before its guard |
 | `active SHARC mod requires a qualified matching core bridge` / `has unqualified active SHARC core bytes or entry` | the core is older than core-dn2 0.2, or its bridge is not the one the profile pins | build with core-dn2 0.2 or newer, its bridge unchanged; set `"resources": {"core": "0.2"}` |
 | `active SHARC stack exceeds the profile limit` | the mod declares more than 428 bytes of stack (the bridge's 116 and yours may not pass 544) | use less stack, and declare what you use |
-| `only one SHARC mod may own the DN2 reservation` | two SHARC mods in one build | pick one |
+| `SHARC mods may combine only one DN2 voice and one DN2 filter` | the build has two mods of one kind, or mixes a master-output mod with a machine | use at most one synth and one filter, or one master-output mod |
 
 ## 6. Definition of done
 
